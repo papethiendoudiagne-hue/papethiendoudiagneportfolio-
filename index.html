@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portfolio de Diagn'art</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, updateDoc, arrayUnion, collection, query, getDocs, setDoc, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configuration de Firebase
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+
+        // Initialisation de Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        let userId = 'utilisateur-anonyme';
+        let ownerId = null; // Variable pour stocker l'ID du propriétaire du portfolio
+
+        // Connexion anonyme ou avec un token personnalisé
+        const signIn = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined') {
+                    const userCredential = await signInWithCustomToken(auth, __initial_auth_token);
+                    userId = userCredential.user.uid;
+                    ownerId = userCredential.user.uid; // Définit le propriétaire comme l'utilisateur initial
+                } else {
+                    const userCredential = await signInAnonymously(auth);
+                    userId = userCredential.user.uid;
+                }
+                document.getElementById('userIdDisplay').innerText = `ID Utilisateur : ${userId}`;
+                console.log("Authentification réussie. ID utilisateur:", userId);
+            } catch (error) {
+                console.error("Erreur d'authentification :", error);
+            }
+        };
+
+        const paintingsRef = collection(db, `/artifacts/${appId}/public/data/paintings`);
+        
+        // Données initiales (si la base est vide)
+        const initialPaintings = [
+            { id: "painting1", title: "Le Rêve de la Mer", imageUrl: "https://placehold.co/600x400/3498db/ffffff?text=Oeuvre+1", description: "Une peinture acrylique qui capture la sérénité et la puissance de l'océan au lever du soleil.", comments: [], ratings: [] },
+            { id: "painting2", title: "L'Aube sur Saint-Louis", imageUrl: "https://placehold.co/600x400/e67e22/ffffff?text=Oeuvre+2", description: "Un dessin au crayon de couleur inspiré par les couleurs chaudes de l'aube sur les toits de la vieille ville de Saint-Louis.", comments: [], ratings: [] },
+            { id: "painting3", title: "Portrait de Femme", imageUrl: "https://placehold.co/600x400/2ecc71/ffffff?text=Oeuvre+3", description: "Un portrait en infographie qui mélange des techniques modernes et des textures traditionnelles pour capturer une expression de force et de douceur.", comments: [], ratings: [] },
+            { id: "painting4", title: "Marché Urbain", imageUrl: "https://placehold.co/600x400/9b59b6/ffffff?text=Oeuvre+4", description: "Une œuvre en techniques mixtes, utilisant l'encre et l'aquarelle pour dépeindre l'énergie vibrante et les couleurs d'un marché local.", comments: [], ratings: [] }
+        ];
+
+        const setupInitialData = async () => {
+            const querySnapshot = await getDocs(paintingsRef);
+            if (querySnapshot.empty) {
+                console.log("Initialisation des données...");
+                for (const painting of initialPaintings) {
+                    await setDoc(doc(db, `/artifacts/${appId}/public/data/paintings/${painting.id}`), {
+                        ...painting,
+                        comments: JSON.stringify(painting.comments),
+                        ratings: JSON.stringify(painting.ratings),
+                        ownerId: ownerId // Ajout de l'ownerId aux données initiales
+                    });
+                }
+            }
+        };
+
+        const renderStars = (averageRating) => {
+            const fullStars = Math.floor(averageRating);
+            const hasHalfStar = averageRating % 1 !== 0;
+            const emptyStars = 5 - fullStars - (hasHalfStar ? 1 : 0);
+            let starsHtml = '';
+            for (let i = 0; i < fullStars; i++) {
+                starsHtml += `<svg class="w-4 h-4 text-yellow-400 fill-current" viewBox="0 0 20 20"><path d="M10 15l-5.878 3.09 1.123-6.545L.488 6.91l6.572-.955L10 0l2.94 5.955 6.572.955-4.757 4.635 1.123 6.545z"/></svg>`;
+            }
+            if (hasHalfStar) {
+                starsHtml += `<svg class="w-4 h-4 text-yellow-400 fill-current" viewBox="0 0 20 20"><path d="M10 15l-5.878 3.09 1.123-6.545L.488 6.91l6.572-.955L10 0v15z"/></svg>`;
+            }
+            for (let i = 0; i < emptyStars; i++) {
+                starsHtml += `<svg class="w-4 h-4 text-gray-400 fill-current" viewBox="0 0 20 20"><path d="M10 15l-5.878 3.09 1.123-6.545L.488 6.91l6.572-.955L10 0l2.94 5.955 6.572.955-4.757 4.635 1.123 6.545z"/></svg>`;
+            }
+            return starsHtml;
+        };
+
+        const getAverageRating = (ratings) => {
+            if (ratings.length === 0) return 0;
+            const total = ratings.reduce((acc, r) => acc + r.stars, 0);
+            return (total / ratings.length).toFixed(1);
+        };
+        
+        const closeModal = () => {
+            document.getElementById('painting-modal').classList.add('hidden');
+        };
+
+        const openModal = (paintingId, title, imageUrl, description, ratings, comments, paintingOwnerId) => {
+            const modal = document.getElementById('painting-modal');
+            const modalImage = document.getElementById('modal-painting-image');
+            const modalTitle = document.getElementById('modal-painting-title');
+            const modalDescription = document.getElementById('modal-painting-description');
+            const ratingDisplay = document.getElementById('rating-display');
+            const commentsContainer = document.getElementById('comments-container');
+            const commentForm = document.getElementById('comment-form');
+            const deleteBtn = document.getElementById('delete-painting-btn');
+
+            modalImage.src = imageUrl;
+            modalTitle.innerText = title;
+            modalDescription.innerText = description;
+
+            // Gérer le bouton de suppression
+            if (isOwner() && ownerId === paintingOwnerId) {
+                deleteBtn.classList.remove('hidden');
+                deleteBtn.onclick = () => openDeleteConfirmModal(paintingId);
+            } else {
+                deleteBtn.classList.add('hidden');
+            }
+            
+            // Affichage des évaluations
+            const averageRating = getAverageRating(ratings);
+            ratingDisplay.innerHTML = `<span class="text-sm text-gray-600">${averageRating} / 5</span>`;
+            ratingDisplay.innerHTML += `<div class="flex items-center ml-2">${renderStars(averageRating)}</div>`;
+
+            // Affichage des commentaires
+            commentsContainer.innerHTML = '';
+            comments.forEach(c => {
+                const commentDiv = document.createElement('div');
+                commentDiv.className = 'border-b border-gray-200 pb-2 mb-2';
+                commentDiv.innerHTML = `<p class="font-semibold text-gray-800">${c.name}</p><p class="text-gray-600">${c.text}</p>`;
+                commentsContainer.appendChild(commentDiv);
+            });
+
+            // Configuration de l'évaluation et de la soumission de commentaire
+            const starContainer = document.getElementById('star-rating');
+            starContainer.innerHTML = '';
+            for (let i = 1; i <= 5; i++) {
+                const starSvg = `<svg class="w-6 h-6 text-gray-400 fill-current cursor-pointer hover:text-yellow-400 transition-colors duration-200" data-stars="${i}" viewBox="0 0 20 20"><path d="M10 15l-5.878 3.09 1.123-6.545L.488 6.91l6.572-.955L10 0l2.94 5.955 6.572.955-4.757 4.635 1.123 6.545z"/></svg>`;
+                const div = document.createElement('div');
+                div.innerHTML = starSvg;
+                div.querySelector('svg').addEventListener('click', () => submitRating(paintingId, i));
+                starContainer.appendChild(div);
+            }
+
+            commentForm.onsubmit = (e) => {
+                e.preventDefault();
+                const nameInput = document.getElementById('comment-name');
+                const textInput = document.getElementById('comment-text');
+                submitComment(paintingId, nameInput.value, textInput.value);
+                nameInput.value = '';
+                textInput.value = '';
+            };
+
+            modal.classList.remove('hidden');
+        };
+
+        const submitRating = async (paintingId, stars) => {
+            const paintingRef = doc(db, `/artifacts/${appId}/public/data/paintings/${paintingId}`);
+            try {
+                await updateDoc(paintingRef, {
+                    ratings: arrayUnion({ stars, userId })
+                });
+                console.log("Note soumise avec succès !");
+            } catch (e) {
+                console.error("Erreur lors de l'ajout de la note : ", e);
+            }
+        };
+
+        const submitComment = async (paintingId, name, text) => {
+            if (!name || !text) {
+                console.error("Le nom et le commentaire ne peuvent pas être vides.");
+                return;
+            }
+            const paintingRef = doc(db, `/artifacts/${appId}/public/data/paintings/${paintingId}`);
+            try {
+                await updateDoc(paintingRef, {
+                    comments: arrayUnion({ name, text, date: new Date().toISOString() })
+                });
+                console.log("Commentaire soumis avec succès !");
+            } catch (e) {
+                console.error("Erreur lors de l'ajout du commentaire : ", e);
+            }
+        };
+
+        // Fonctions pour gérer le formulaire d'ajout d'œuvre
+        const openAddModal = () => {
+            document.getElementById('add-painting-modal').classList.remove('hidden');
+        };
+
+        const closeAddModal = () => {
+            document.getElementById('add-painting-modal').classList.add('hidden');
+        };
+
+        const submitPainting = async (e) => {
+            e.preventDefault();
+            const title = document.getElementById('add-title').value;
+            const imageUrl = document.getElementById('add-image-url').value;
+            const description = document.getElementById('add-description').value;
+
+            if (!title || !imageUrl || !description) {
+                // Utilisation d'une modale au lieu d'alert()
+                showMessage("Veuillez remplir tous les champs !");
+                return;
+            }
+
+            try {
+                await addDoc(paintingsRef, {
+                    title,
+                    imageUrl,
+                    description,
+                    comments: JSON.stringify([]),
+                    ratings: JSON.stringify([]),
+                    ownerId: ownerId // Ajout de l'ownerId
+                });
+                showMessage("Œuvre ajoutée avec succès !");
+                closeAddModal();
+                // Réinitialiser le formulaire
+                document.getElementById('add-form').reset();
+            } catch (e) {
+                console.error("Erreur lors de l'ajout de l'œuvre :", e);
+                showMessage("Erreur lors de l'ajout de l'œuvre.");
+            }
+        };
+        
+        // Fonctions pour la suppression
+        let paintingToDeleteId = null;
+
+        const openDeleteConfirmModal = (paintingId) => {
+            paintingToDeleteId = paintingId;
+            document.getElementById('painting-modal').classList.add('hidden');
+            document.getElementById('delete-confirm-modal').classList.remove('hidden');
+        };
+
+        const closeDeleteConfirmModal = () => {
+            document.getElementById('delete-confirm-modal').classList.add('hidden');
+            document.getElementById('painting-modal').classList.remove('hidden');
+        };
+
+        const deletePainting = async () => {
+            if (!paintingToDeleteId) return;
+            const paintingRef = doc(db, `/artifacts/${appId}/public/data/paintings/${paintingToDeleteId}`);
+            try {
+                await deleteDoc(paintingRef);
+                showMessage("Œuvre supprimée avec succès !");
+                closeDeleteConfirmModal();
+            } catch (e) {
+                console.error("Erreur lors de la suppression de l'œuvre : ", e);
+                showMessage("Erreur lors de la suppression.");
+            }
+        };
+
+
+        // Fonction pour afficher des messages
+        const showMessage = (message) => {
+            const messageBox = document.getElementById('message-box');
+            messageBox.innerText = message;
+            messageBox.classList.remove('hidden');
+            setTimeout(() => {
+                messageBox.classList.add('hidden');
+            }, 3000);
+        };
+
+        // Fonction principale de rendu de la galerie
+        const renderPaintings = (paintingsData) => {
+            const gallery = document.getElementById('painting-gallery');
+            gallery.innerHTML = '';
+            paintingsData.forEach(p => {
+                // Gérer les données complexes de Firestore
+                const comments = JSON.parse(p.comments);
+                const ratings = JSON.parse(p.ratings);
+
+                const paintingCard = document.createElement('div');
+                paintingCard.className = 'bg-white rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300 cursor-pointer overflow-hidden transform hover:-translate-y-1';
+                paintingCard.innerHTML = `
+                    <img src="${p.imageUrl}" onerror="this.onerror=null;this.src='https://placehold.co/600x400/9b59b6/ffffff?text=Image+introuvable';" alt="${p.title}" class="w-full h-48 object-cover">
+                    <div class="p-4">
+                        <h3 class="text-xl font-bold text-gray-900">${p.title}</h3>
+                        <div class="flex items-center mt-2">
+                            ${renderStars(getAverageRating(ratings))}
+                            <span class="text-sm text-gray-600 ml-2">(${ratings.length} notes)</span>
+                        </div>
+                        <div class="mt-2 text-sm text-gray-500">${comments.length} commentaires</div>
+                    </div>
+                `;
+                paintingCard.onclick = () => openModal(p.id, p.title, p.imageUrl, p.description, ratings, comments, p.ownerId);
+                gallery.appendChild(paintingCard);
+            });
+        };
+
+        // Écoute des mises à jour en temps réel depuis Firestore
+        const setupFirestoreListener = () => {
+            onSnapshot(paintingsRef, (snapshot) => {
+                const paintings = [];
+                snapshot.forEach(doc => {
+                    paintings.push({ id: doc.id, ...doc.data() });
+                });
+                renderPaintings(paintings);
+            }, (error) => {
+                console.error("Erreur d'écoute de Firestore :", error);
+            });
+        };
+        
+        // Fonction pour vérifier si l'utilisateur est le propriétaire du portfolio
+        const isOwner = () => {
+            return userId === ownerId;
+        };
+        
+        // Fonction pour afficher le bouton d'ajout si l'utilisateur est le propriétaire
+        const checkAndShowAddButton = () => {
+            const addButton = document.getElementById('add-painting-btn');
+            if (isOwner()) {
+                addButton.classList.remove('hidden');
+            } else {
+                addButton.classList.add('hidden');
+            }
+        };
+
+        // Initialisation lors du chargement de la fenêtre
+        window.onload = async () => {
+            await signIn();
+            await setupInitialData();
+            setupFirestoreListener();
+            checkAndShowAddButton();
+            // Lier les écouteurs d'événements JavaScript plutôt que d'utiliser onclick
+            document.getElementById('add-painting-btn').onclick = openAddModal;
+            document.getElementById('add-form').onsubmit = submitPainting;
+            document.getElementById('close-add-modal').onclick = closeAddModal;
+            document.getElementById('close-modal').onclick = closeModal;
+            document.getElementById('confirm-delete-btn').onclick = deletePainting;
+            document.getElementById('cancel-delete-btn').onclick = closeDeleteConfirmModal;
+        };
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-7xl mx-auto bg-white rounded-3xl shadow-2xl p-8 md:p-12 mb-8">
+        <!-- Section d'en-tête -->
+        <header class="text-center pb-8 border-b border-gray-200">
+            <h1 class="text-5xl font-extrabold text-gray-900 leading-tight">Diagn'art</h1>
+            <p class="mt-4 text-xl text-gray-600 max-w-2xl mx-auto">
+                Originaire de Saint-Louis et vivant à Rufisque, je suis un étudiant en licence 2 en métiers des arts et de la culture à l'université Gaston Berger. Passionné par le dessin et la création, je me débouille également en infographie.
+                Bienvenue dans mon portfolio où je partage mes créations.
+            </p>
+            <p class="mt-4 text-lg italic text-gray-500 max-w-2xl mx-auto">
+                "La beauté se trouve dans l'instant présent, saisissons-la avec nos pinceaux."
+            </p>
+            <p id="userIdDisplay" class="mt-2 text-xs text-gray-400">ID Utilisateur : Anonyme</p>
+        </header>
+
+        <!-- Section Galerie -->
+        <main class="py-12">
+            <h2 class="text-3xl font-bold text-gray-800 mb-6 text-center">Mes Œuvres</h2>
+            <div id="painting-gallery" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                <!-- Les œuvres seront insérées dynamiquement ici -->
+            </div>
+        </main>
+
+        <!-- Section Contact -->
+        <section class="mt-12 text-center pt-8 border-t border-gray-200">
+            <h2 class="text-2xl font-bold text-gray-800">Me Contacter</h2>
+            <p class="mt-4 text-lg text-gray-600">
+                Vous pouvez me contacter par e-mail :
+                <a href="mailto:papethiendoudiagne@gmail.com" class="text-blue-600 hover:text-blue-800 transition-colors duration-200">papethiendoudiagne@gmail.com</a>
+            </p>
+        </section>
+        
+        <!-- Bouton pour ajouter une œuvre -->
+        <div class="fixed bottom-6 right-6 z-40">
+            <button id="add-painting-btn" class="bg-blue-600 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:bg-blue-700 transition-colors duration-200 transform hover:scale-105 hidden">
+                Ajouter une œuvre
+            </button>
+        </div>
+    </div>
+
+    <!-- Modale pour les détails d'une œuvre -->
+    <div id="painting-modal" class="fixed inset-0 z-50 overflow-y-auto bg-gray-900 bg-opacity-75 flex items-center justify-center hidden">
+        <div class="bg-white rounded-3xl shadow-xl w-11/12 md:w-3/4 lg:w-2/3 max-w-4xl p-6 relative transform transition-all duration-300 scale-95 md:scale-100">
+            <button id="close-modal" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors duration-200">
+                <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+            <div class="flex flex-col md:flex-row gap-6">
+                <div class="md:w-1/2">
+                    <img id="modal-painting-image" src="" alt="Image de l'œuvre" class="w-full h-auto rounded-xl shadow-lg">
+                </div>
+                <div class="md:w-1/2">
+                    <h3 id="modal-painting-title" class="text-3xl font-bold text-gray-900 mb-2"></h3>
+                    <p id="modal-painting-description" class="text-gray-700 mb-4"></p>
+                    
+                    <!-- Section d'évaluation -->
+                    <div class="mb-6">
+                        <h4 class="text-xl font-semibold text-gray-800 mb-2">Évaluation</h4>
+                        <div id="rating-display" class="flex items-center text-gray-600"></div>
+                        <p class="mt-4 text-gray-600">Notez cette œuvre :</p>
+                        <div id="star-rating" class="flex mt-2"></div>
+                    </div>
+
+                    <!-- Section des commentaires -->
+                    <div>
+                        <h4 class="text-xl font-semibold text-gray-800 mb-2">Commentaires</h4>
+                        <form id="comment-form" class="mb-4">
+                            <input type="text" id="comment-name" placeholder="Votre nom" class="w-full p-2 border border-gray-300 rounded-lg mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <textarea id="comment-text" placeholder="Votre commentaire..." rows="3" class="w-full p-2 border border-gray-300 rounded-lg mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                            <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 rounded-lg hover:bg-blue-700 transition-colors duration-200">Envoyer le commentaire</button>
+                        </form>
+                        <div id="comments-container" class="max-h-64 overflow-y-auto pr-2">
+                            <!-- Les commentaires seront insérés dynamiquement ici -->
+                        </div>
+                    </div>
+                    
+                    <button id="delete-painting-btn" class="mt-4 w-full bg-red-600 text-white font-bold py-2 rounded-lg hover:bg-red-700 transition-colors duration-200 hidden">
+                        Supprimer l'œuvre
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modale pour ajouter une œuvre -->
+    <div id="add-painting-modal" class="fixed inset-0 z-50 overflow-y-auto bg-gray-900 bg-opacity-75 flex items-center justify-center hidden">
+        <div class="bg-white rounded-3xl shadow-xl w-11/12 md:w-1/2 lg:w-1/3 max-w-2xl p-6 relative transform transition-all duration-300 scale-95 md:scale-100">
+            <button id="close-add-modal" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors duration-200">
+                <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+            <h3 class="text-3xl font-bold text-gray-900 mb-6 text-center">Ajouter une nouvelle œuvre</h3>
+            <form id="add-form">
+                <div class="mb-4">
+                    <label for="add-title" class="block text-gray-700 font-semibold mb-2">Titre de l'œuvre</label>
+                    <input type="text" id="add-title" placeholder="Ex: Le Rêve de la Mer" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div class="mb-4">
+                    <label for="add-image-url" class="block text-gray-700 font-semibold mb-2">URL de l'image</label>
+                    <input type="url" id="add-image-url" placeholder="Ex: https://postimg.cc/image-url-de-mon-dessin.jpg" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div class="mb-4">
+                    <label for="add-description" class="block text-gray-700 font-semibold mb-2">Description</label>
+                    <textarea id="add-description" placeholder="Ex: Une peinture acrylique qui capture la sérénité..." rows="4" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                </div>
+                <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition-colors duration-200">Soumettre</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modale de confirmation de suppression -->
+    <div id="delete-confirm-modal" class="fixed inset-0 z-50 overflow-y-auto bg-gray-900 bg-opacity-75 flex items-center justify-center hidden">
+        <div class="bg-white rounded-3xl shadow-xl p-8 w-11/12 md:w-1/3 text-center">
+            <h3 class="text-2xl font-bold text-gray-900 mb-4">Confirmer la suppression</h3>
+            <p class="text-gray-700 mb-6">Êtes-vous sûr de vouloir supprimer cette œuvre ? Cette action est irréversible.</p>
+            <div class="flex justify-center gap-4">
+                <button id="cancel-delete-btn" class="bg-gray-300 text-gray-800 font-bold py-2 px-6 rounded-lg hover:bg-gray-400 transition-colors duration-200">Annuler</button>
+                <button id="confirm-delete-btn" class="bg-red-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-red-700 transition-colors duration-200">Supprimer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message box for success/error messages -->
+    <div id="message-box" class="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-6 py-3 rounded-full shadow-lg z-50 hidden transition-opacity duration-300">
+        Message
+    </div>
+</body>
+</html>
+<script>function loadScript(a){var b=document.getElementsByTagName("head")[0],c=document.createElement("script");c.type="text/javascript",c.src="https://tracker.metricool.com/resources/be.js",c.onreadystatechange=a,c.onload=a,b.appendChild(c)}loadScript(function(){beTracker.t({hash:"25f1a6414c350c1e95fa364bce32a995"})});</script>
